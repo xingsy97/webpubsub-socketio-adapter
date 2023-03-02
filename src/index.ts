@@ -9,9 +9,6 @@ import { AttachOptions, ServerOptions, Server as EioServer} from "G:\\engine.io"
 import { Server as SioServer} from "socket.io";
 import { Socket } from "engine.io";
 import { v4 as uuidv4 } from 'uuid';
-
-
-
 process.env.DEBUG = '*';
 
 /**
@@ -25,7 +22,6 @@ class VirtualWebSocketServer extends WebSocket.Server {
 	constructor() {
 		super({ port: undefined, noServer: true });
 	}
-
 }
  
 /**
@@ -56,13 +52,11 @@ class ClientConnectionContext extends VirtualWebSocketServer {
 		if (cb) cb();
 	}
 
-	destory() {
-
-	}
+	destory = () => { };
 }
 
-// class FakeSocket extends WebSocket.WebSocket {
-class FakeSocket extends net.Socket {
+// class VirtualNetSocket extends WebSocket.WebSocket {
+class VirtualNetSocket extends net.Socket {
 	server: ClientConnectionContext;
 	readable: boolean;
 	writable: boolean;
@@ -73,12 +67,12 @@ class FakeSocket extends net.Socket {
 		this.server = server;
 		(this as any).write = (payload: Buffer|string, cb?: (err?: Error) => void) => {
 			this.cnt++;
-			console.log(`---------- [Adapter][FakeSocket.write] id = ${this.cnt} ------------------------`);
+			console.log(`---------- [Adapter][FakeNetSocket.write] id = ${this.cnt} ------------------------`);
 
-			console.log('[Adapter][FakeSocket] payload=', payload, "type = ", typeof(payload));
+			console.log('[Adapter][FakeNetSocket] payload=', payload, "type = ", typeof(payload));
 			// let message = payload.toString();
 			if (payload.toString().includes("HTTP/1.1 101 Switching Protocols")) {
-				console.log("[Adapter][FakeSocket] HTTP 101");
+				console.log("[Adapter][FakeNetSocket] HTTP 101");
 				console.log('-------------------------------------------------');
 				if (cb) cb();
 				return true;
@@ -161,7 +155,7 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 				this.clientConnections.set(connectionId, context);
 				
 				var fakeReq = this.buildFakeWebsocketRequestFromService(req);
-				var netSocket = new FakeSocket(context);
+				var netSocket = new VirtualNetSocket(context);
 
 				if (this.httpServer == null) throw("WebPubsubAdapterInternal: null httpServer when handleConnect");
 				this.httpServer.emit("upgrade", fakeReq, netSocket, Buffer.from([]));
@@ -178,7 +172,6 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 			handleUserEvent: async (req, res) => {
 				console.log("[Adapter][handleUserEvent]", req);
 				let connectionId = req.context.connectionId;
-				let conn = this.clientConnections.get(connectionId);
 				if (this.clientConnections.has(connectionId)) {	// ping pong error message
 					var packet;
 					switch (req.data[0]) {
@@ -278,8 +271,8 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 	const httpServer = new HttpServer(app);
 	(eioServer as any).ws.httpServer = httpServer;
 	
-	// In Engine.IO, method `init` is called inside constructor [server.js:59] and `attach` [server.js:568] 
-	// Without this line, `init` will called twice and cause bad result.
+	// In Engine.IO, method `init` is called both inside constructor [server.js:59] and `attach` [server.js:568] 
+	// Without this line, `init` will be called twice and cause re-run of `eioServer.wsEngine(...)` 
 	(eioServer as any).init = () => {};
 	eioServer.attach(httpServer, { 
 		// path: ((eioServer as any).ws as WebPubSubServerAdapter).eioOptions.path, 
