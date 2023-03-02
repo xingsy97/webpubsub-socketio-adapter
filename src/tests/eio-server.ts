@@ -11,7 +11,7 @@ const wpsOptions = {
 const app = express();
 
 const adapter = new WebPubSubServerAdapter(wpsOptions);
-const eioServer = new EioServer({transports:['websocket'], wsEngine: adapter, httpCompression:false, pingTimeout:1000000, pingInterval:5000});
+const eioServer = new EioServer({transports:['websocket'], wsEngine: adapter, httpCompression:false, pingTimeout:1000000, pingInterval:1000});
 const httpServer = eioBuild(app, eioServer);
 
 httpServer.listen(3000);
@@ -20,6 +20,6 @@ eioServer.on("connection", socket => {
   (socket.server.ws as any).putSocketInfo(socket.id, socket);
   console.log("[server] connection")
 
-  socket.send("[From Server] hello");
+  // socket.send("[From Server] hello");
   setInterval(() => { console.log(socket.readyState); }, 10000);
 });

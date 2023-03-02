@@ -9,6 +9,7 @@ import { AttachOptions, ServerOptions, Server as EioServer} from "G:\\engine.io"
 import { Server as SioServer} from "socket.io";
 import { Socket } from "engine.io";
 import { v4 as uuidv4 } from 'uuid';
+import { connect } from "http2";
 process.env.DEBUG = '*';
 
 /**
@@ -65,14 +66,15 @@ class VirtualNetSocket extends net.Socket {
 	constructor(server: ClientConnectionContext) {
 		super(null);
 		this.server = server;
+
 		(this as any).write = (payload: Buffer|string, cb?: (err?: Error) => void) => {
 			this.cnt++;
-			console.log(`---------- [Adapter][FakeNetSocket.write] id = ${this.cnt} ------------------------`);
+			console.log(`---------- [Adapter][VirtualNetSocket.write] id = ${this.cnt} ------------------------`);
 
-			console.log('[Adapter][FakeNetSocket] payload=', payload, "type = ", typeof(payload));
+			console.log('[Adapter][VirtualNetSocket] payload=', payload, "type = ", typeof(payload));
 			// let message = payload.toString();
 			if (payload.toString().includes("HTTP/1.1 101 Switching Protocols")) {
-				console.log("[Adapter][FakeNetSocket] HTTP 101");
+				console.log("[Adapter][VirtualNetSocket] HTTP 101");
 				console.log('-------------------------------------------------');
 				if (cb) cb();
 				return true;
@@ -82,6 +84,7 @@ class VirtualNetSocket extends net.Socket {
 				this.server.sendText(payload, cb);
 			}
 			else {
+				// this.server.send(payload, cb);
 				if (cb) cb();
 				// this.server.send(payload);
 			}
@@ -114,6 +117,7 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 	wpsOptions: WebPubSubServerAdapterOptions;
 	httpServer: HttpServer = null;
 	candidateIds: Array<string> = new Array();
+	connectRequests: Map<string, any> = new Map();
 	currentIdIdx: number = 0;
 	adapterId: string = "";
 
@@ -151,22 +155,32 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 				console.log("[Adatper] handleConnect");
 				let connectionId = req.context.connectionId;
 				this.candidateIds.push(connectionId);
+
 				let context = new ClientConnectionContext(this.serviceClient, connectionId)
 				this.clientConnections.set(connectionId, context);
-				
-				var fakeReq = this.buildFakeWebsocketRequestFromService(req);
-				var netSocket = new VirtualNetSocket(context);
+				this.connectRequests.set(connectionId, req);
 
 				if (this.httpServer == null) throw("WebPubsubAdapterInternal: null httpServer when handleConnect");
-				this.httpServer.emit("upgrade", fakeReq, netSocket, Buffer.from([]));
+				
 				// this.clientConnections.get(connectionId).send("hello");
 				res.success({});
 			},
 
 			onConnected: async (req) => {
-				console.log(
-					`connectionId = ${req.context.connectionId} is connected with Web PubSub service`
-				);
+				var connectionId = req.context.connectionId;
+				if (this.clientConnections.has(connectionId)) {
+					var context = this.clientConnections.get(connectionId);
+					var connectReq = this.connectRequests.get(connectionId);
+					var fakeReq = this.buildFakeWebsocketRequestFromService(connectReq);
+
+					var netSocket = new VirtualNetSocket(context);
+
+					this.httpServer.emit("upgrade", fakeReq, netSocket, Buffer.from([]));
+					console.log(`connectionId = ${req.context.connectionId} is connected with Web PubSub service`);
+				}
+				else {
+					console.log("[WebPubSubServerAdapterInternal][onConnected] Invalid connection id");
+				}
 			},
 
 			handleUserEvent: async (req, res) => {
