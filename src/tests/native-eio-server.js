@@ -6,6 +6,7 @@ const engine = require("G:/engine.io");
 const server = engine.listen(3000, {
   transports:['websocket'], 
   cors: {origin:"*"},
+  pingInterval:3000
 }, null);
 
 // server.listen(3000);

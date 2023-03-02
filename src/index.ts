@@ -1,21 +1,26 @@
 import { WebPubSubServiceClient } from "@azure/web-pubsub";
+import express from "express";
 import { WebPubSubEventHandler } from "@azure/web-pubsub-express";
-import { Server as HttpServer } from "http";
+import { Server as HttpServer} from "http";
 import WebSocket from "ws";
 import * as core from "express-serve-static-core";
 import * as net from "net";
 import { AttachOptions, ServerOptions, Server as EioServer} from "G:\\engine.io";
 import { Server as SioServer} from "socket.io";
-// import { WebSocket } from "./transports";
+import { Socket } from "engine.io";
+import { v4 as uuidv4 } from 'uuid';
+
+
+
 process.env.DEBUG = '*';
 
 /**
  * a virtual WebSocket.Server without real server
  */
 class VirtualWebSocketServer extends WebSocket.Server {
-	protocol: string = "graphql-ws";
-	readyState: number = WebSocket.OPEN;
-	writable: boolean = false;
+	readyState: number;
+	writable: boolean;
+	readable: boolean;
 
 	constructor() {
 		super({ port: undefined, noServer: true });
@@ -39,48 +44,62 @@ class ClientConnectionContext extends VirtualWebSocketServer {
 		this.cnt = 0;
 	}
 
-	sendText(data: string) { 
+	// Override the send action of native WebSocket
+	async send(packets: any, cb?: (err?: Error) => void) { 
+		this.serviceClient.sendToConnection(this.connectionId, packets);
+		if (cb) cb();
+	}
+
+	async sendText(data: string, cb?: (err?: Error) => void) { 
 		console.log(`[Adapter][ConnectionContext] sendText ${data}`)
-		this.serviceClient.sendToConnection(this.connectionId, data, {contentType: "text/plain"});
-	}
-}
-
-class FakeSocket extends net.Socket {
-	server: ClientConnectionContext;
-	readable: boolean = true;
-	writeable:boolean = true;
-	cnt:number = 0;
-
-	constructor(server: ClientConnectionContext) {
-		super();
-		this.server = server;
-	}
-	write(payload: any, ...args): boolean {
-		this.cnt++;
-		console.log(`---------- [Adapter][FakeSocket.write] id = ${this.cnt} ------------------------`);
-
-		console.log('[Adapter][FakeSocket] payload=', payload, ' args=', args, "type = ", typeof(payload));
-		// let message = payload.toString();
-		if (payload.indexOf("HTTP/1.1 101 Switching Protocols") == 0) {
-			console.log("[Adapter][FakeSocket] HTTP 101");
-			console.log('-------------------------------------------------');
-			return true;
-		}
-
-		if (typeof(payload) === 'string') {
-			this.server.sendText(payload);
-		}
-		else {
-			return true;
-			this.server.send(payload);
-		}
-		console.log('-------------------------------------------------');
-		return true;
+		await this.serviceClient.sendToConnection(this.connectionId, data, {contentType: "text/plain"});
+		if (cb) cb();
 	}
 
 	destory() {
 
 	}
+}
+
+// class FakeSocket extends WebSocket.WebSocket {
+class FakeSocket extends net.Socket {
+	server: ClientConnectionContext;
+	readable: boolean;
+	writable: boolean;
+	cnt:number = 0;
+
+	constructor(server: ClientConnectionContext) {
+		super(null);
+		this.server = server;
+		(this as any).write = (payload: Buffer|string, cb?: (err?: Error) => void) => {
+			this.cnt++;
+			console.log(`---------- [Adapter][FakeSocket.write] id = ${this.cnt} ------------------------`);
+
+			console.log('[Adapter][FakeSocket] payload=', payload, "type = ", typeof(payload));
+			// let message = payload.toString();
+			if (payload.toString().includes("HTTP/1.1 101 Switching Protocols")) {
+				console.log("[Adapter][FakeSocket] HTTP 101");
+				console.log('-------------------------------------------------');
+				if (cb) cb();
+				return true;
+			}
+
+			if (typeof(payload) === 'string') {
+				this.server.sendText(payload, cb);
+			}
+			else {
+				if (cb) cb();
+				// this.server.send(payload);
+			}
+			console.log('-------------------------------------------------');
+			return true;
+		}
+	}
+
+	destroy = () => {}
+	// write(payload: Buffer|string):boolean {
+	// 	return this.write(payload);
+	// }	
 }
 
 interface WebPubSubServerAdapterOptions {
@@ -96,22 +115,26 @@ interface WebPubSubServerAdapterOptions {
 class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 	serviceClient: WebPubSubServiceClient;
 	clientConnections: Map<string, ClientConnectionContext> = new Map();
+	sockets: Map<string, Socket> = new Map();
 	eventHandler: WebPubSubEventHandler;
 	wpsOptions: WebPubSubServerAdapterOptions;
 	httpServer: HttpServer = null;
+	candidateIds: Array<string> = new Array();
+	currentIdIdx: number = 0;
+	adapterId: string = "";
 
 	buildFakeWebsocketRequestFromService(req) {
-		var fakeReq = {};
-		fakeReq["url"] = "/eventhandler/";  // need to update runtime
-		// fakeReq["_query"] = (req as any).query;
-		fakeReq["_query"] = {"EIO":"4", "transport": "websocket"}
-		// poll mode only
-		// fakeReq["._query.j = ?
-		fakeReq["websocket"] = null;
-		fakeReq["method"] = "GET"; // req.headers. // Runtime need further update, add METHOD into header
-		fakeReq["headers"] = {};
-		fakeReq["statusCode"] = null;
-		fakeReq["statusMessage"] = null;
+		var fakeReq = {
+			"method": "GET", // req.headers. // Runtime need further update, add METHOD into header
+			"url": "/eventhandler/",  // need to update in runtime
+			"headers": {},
+			"_query": {"EIO":"4", "transport": "websocket"},
+			"websocket": null,
+			"statusCode": null,
+			"statusMessage": null,
+			// _query: (req as any).query,
+			// "._query": ? // poll mode only
+		}
 		for (let key in req.headers) {
 			let _key = key.toLowerCase();
 			fakeReq["headers"][_key] = _key == "upgrade" ? req.headers[key][0] : req.headers[key];
@@ -121,17 +144,19 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 
 	constructor(options: WebPubSubServerAdapterOptions) {
 		super();
+		this.adapterId = uuidv4();
 		this.serviceClient = new WebPubSubServiceClient(
 			options.connectionString,
 			options.hub, 
 			{ allowInsecureConnection: true }
 		);
 
-		let handler = new WebPubSubEventHandler(options.hub, {
+		this.eventHandler = new WebPubSubEventHandler(options.hub, {
 			path: options.path,
 			handleConnect: (req, res) => {
 				console.log("[Adatper] handleConnect");
 				let connectionId = req.context.connectionId;
+				this.candidateIds.push(connectionId);
 				let context = new ClientConnectionContext(this.serviceClient, connectionId)
 				this.clientConnections.set(connectionId, context);
 				
@@ -151,24 +176,30 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 			},
 
 			handleUserEvent: async (req, res) => {
-				console.log("[Adapter] handleUserEvent", req);
+				console.log("[Adapter][handleUserEvent]", req);
 				let connectionId = req.context.connectionId;
 				let conn = this.clientConnections.get(connectionId);
-				// if (this.clientConnections.has(connectionId)) {
-				//   switch (req.context.eventName) {
-				//     case "eio-2": //ping
-				//       this.message()
-				//       break;
-				//     case "eio-4": // message
-				//       break;
-				//     default:
-				//       break;
-				//   }
-				// }
-				// req.data = (req.data as string).replace('/client/hubs/sample_chat,', "");
-				// console.log("AFTER req.data");
-				conn.emit("data", req.data);
-				return res.success();
+				if (this.clientConnections.has(connectionId)) {	// ping pong error message
+					var packet;
+					switch (req.data[0]) {
+						case "2":
+							packet = {"type": "ping", "data": ""}; break;
+						case "3":
+							packet = {"type": "pong", "data": ""}; break;
+						case "4":
+							packet = {"type": "message", "data": ""}; break;
+						default:
+							packet = {"type": "error", "data": ""}; 
+							console.log("[WebPuBsubServerAdapterInternal][handleUserEvent] Failed to parse request, req = ", req);
+							break;
+					}
+					(this.sockets[req.context.connectionId] as any).onPacket(packet);
+					// this.httpServer.emit("packet", packet);
+					return res.success();
+				}
+				else {
+					return res.fail(401);
+				}
 			},
 
 			onDisconnected: async (req) => {
@@ -179,22 +210,18 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 				}
 			},
 		});
-		this.eventHandler = handler;
 		this.wpsOptions = options;
 	}
 
-	installHTTPServer(httpServer: HttpServer) {
-		this.httpServer = httpServer;
-	}
+	installHTTPServer = (httpServer: HttpServer)  => { this.httpServer = httpServer; }
 
-	getMiddleware() {
-		return this.eventHandler.getMiddleware()
-	}
+	getMiddleware = () => this.eventHandler.getMiddleware();
 
-	async getSubscriptionPath() {
-		let token = await this.serviceClient.getClientAccessToken();
-		return token.baseUrl;
-	}
+	putSocketInfo = (socketId: string, socket: Socket) => { this.sockets[socketId] = socket; }
+
+	getNextId = () => this.candidateIds[this.currentIdIdx++];
+
+	getSubscriptionPath = async () => (await this.serviceClient.getClientAccessToken()).baseUrl;
 }
 
 class WebPubSubServerAdapter {
@@ -206,47 +233,37 @@ class WebPubSubServerAdapter {
 			{
 				return new target(options, ...args);
 			},
-			// get(target, prop, receiver) {
-			//   if (prop === "eioOptions") {
-			//     return {
-			//       transports:['websocket', "polling"], 
-			//       cors: {origin:"*"},
-			//       wsEngine: WebPubSubServerAdapter,
-			//       path: options.hub,
-			//       addTrailingSlash: false
-			//     }
-			//   }
-			//   var origin = Reflect.get(target, prop, receiver);
-			//   if (typeof(origin) =="function") {
-			//     var func = (...args) => {
-			//       return origin.apply(this, target, args);
-			//     }
-			//     return func;
-			//   }
-			//   return origin;
-			// },
 		}
 		var proxy = new Proxy(WebPubSubServerAdapterInternal, proxyHandler);
 		return proxy;
 	}
 }
 
-// function getEioOptions(
-// 	wpsOptions: WebPubSubServerAdapterOptions, 
-// 	httpServer: HttpServer, 
-// 	expresApp: core.Express):AttachOptions & ServerOptions {
-// 		const adapter = new WebPubSubServerAdapter(wpsOptions, httpServer, expresApp);
-// 		return {
-// 			transports:['websocket'], 
-// 			// cors: {origin:'*', optionsSuccessStatus: 200},
-// 			wsEngine: adapter,
-// 			path: wpsOptions.path,
-// 			addTrailingSlash: false,
-// 		}
-// 	}
+/* 	
+ In the design of Engine.IO package, the EIO server has its own middlewares rather than sharing with http server.
+ And the entry of EIO middlewares is put in the first place when receiving HTTP request. Http server listeners is behind EIO middlewares
+ 
+                           .-------------.   Yes
+       a HTTP request ---> | check(req)? |  ------->  `handleRequest(req)` (Engine.IO middlewares)
+                           .-------------.
+						         |
+                                 |     No
+                                 ------------------>  HttpServer.listeners
 
-function eioBuild(app: core.Express, eioServer: EioServer) {	
-	app.use((eioServer as any).ws.getMiddleware());
+	
+  And the Engine.IO handshake behaviour is inside `handleRequest`
+  Web PubSub handshake handler is inside its express middleware. So a temporary ExpressApp and HttpServer are created as bridges to pass Web PubSub handler into Engine.IO middlewares.
+*/
+function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {	
+	// Pass Web PubSub Express middlewares into Engine.IO middlewares
+	let bridgeApp = express();
+	bridgeApp.use((eioServer as any).ws.getMiddleware());
+	const bridgeHttpServer = new HttpServer(bridgeApp);
+	
+	(eioServer as any).middlewares = bridgeHttpServer.listeners("request");	
+	bridgeHttpServer.removeAllListeners("request");
+
+	// Set negotiate handler for ExpressApp
 	app.get('/negotiate', async (req, res) => {
 		let id = req.query.id;
 		if (!id) {
@@ -259,12 +276,21 @@ function eioBuild(app: core.Express, eioServer: EioServer) {
 		res.json({url: token.url});
 	});
 	const httpServer = new HttpServer(app);
-	(eioServer as any).ws.installHTTPServer(httpServer);
+	(eioServer as any).ws.httpServer = httpServer;
+	
+	// In Engine.IO, method `init` is called inside constructor [server.js:59] and `attach` [server.js:568] 
+	// Without this line, `init` will called twice and cause bad result.
+	(eioServer as any).init = () => {};
+	eioServer.attach(httpServer, { 
+		// path: ((eioServer as any).ws as WebPubSubServerAdapter).eioOptions.path, 
+		path: "/eventhandler",
+		addTrailingSlash:false
+	});
 
-	var http_listeners = httpServer.listeners("request").slice(0);
-	(eioServer as any).middlewares = http_listeners;
-	eioServer.attach(httpServer, {path:'/eventhandler/', addTrailingSlash:false})
-
+	eioServer.generateId = (req:any) => {
+		var id = (eioServer as any).ws.getNextId();
+		return id;
+	}
 	return httpServer;
 }
 

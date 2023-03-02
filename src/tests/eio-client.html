@@ -21,6 +21,7 @@
 				},
 				path: path
 			});  
+			setInterval(() => {console.log(socket.readyState);}, 3000);
 		}
 		else {		// Without Web PubSub
 			socket = new eio("localhost:3000", {
