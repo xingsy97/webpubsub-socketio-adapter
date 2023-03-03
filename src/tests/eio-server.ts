@@ -17,6 +17,7 @@ const httpServer = eioBuild(app, eioServer);
 httpServer.listen(3000);
 
 eioServer.on("connection", socket => {
+  console.log("[SIO Server][onConnect]");
   (socket.server.ws as any).putSocketInfo(socket.id, socket);
 
   console.log("[server] connection")

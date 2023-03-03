@@ -8,19 +8,21 @@
 		if (mode == 2) {	// With Web PubSub
 			let res = await fetch(`http://localhost:3000/negotiate?id=user1`)
 			let data = await res.json();
-			let url = data.url;
+			let url = data.eio.baseUrl;
 			// sample url = "ws://localhost:8080/client/hubs/sample_chat/?access_token=...";
 			console.log(url);
 			path = "/clients/engineio/hubs/eio_hub";
-			socket = new eio(url, {
+			socket = new eio(url, 
+				{
 					transports: ['websocket'],
 					transportOptions: {
-					websocket: { extraHeaders: {'Access-Control-Allow-Origin': '*', 'WebHook-Allowed-Origin': "*"} },
-					// subprotocols: ["json.webpubsub.azure.v1"],
-					reconnection:false
-				},
-				path: path
-			});  
+						websocket: { extraHeaders: {'Access-Control-Allow-Origin': '*', 'WebHook-Allowed-Origin': "*"} },	
+						// subprotocols: ["json.webpubsub.azure.v1"],
+						reconnection:false,
+					},
+					path: path,
+					query: data.eio.query
+				});
 			setInterval(() => {console.log(socket.readyState);}, 3000);
 		}
 		else {		// Without Web PubSub

@@ -175,6 +175,7 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 					fakeReq["webPubSubContext"] = context;
 					// var netSocket = new VirtualNetSocket(context);
 					this.httpServer.emit("upgrade", fakeReq, new net.Socket(), Buffer.from([]));
+					console.log((this.linkedEioServer as any).clients);
 					console.log(`connectionId = ${req.context.connectionId} is connected with Web PubSub service`);
 				}
 				else {
@@ -279,10 +280,15 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 			res.status(400).send('missing user id');
 			return;
 		}
-		let token = await (eioServer as any).ws.serviceClient.getClientAccessToken({ userId: id });
+		// tokenInfo = {"token": "...", "baseUrl": "...", "url": "/..."}
+		let tokenInfo = await ((eioServer as any).ws.serviceClient as WebPubSubServiceClient).getClientAccessToken({ userId: id });
+		tokenInfo["eio"] = {
+			"baseUrl": tokenInfo.baseUrl.substring(0, tokenInfo.baseUrl.indexOf("/clients/engineio/hubs/")),
+			"query": {"access_token": tokenInfo.token}
+		}
 		res.setHeader("Access-Control-Allow-Origin", "*");
-		console.log(token.url);
-		res.json({url: token.url});
+		console.log(tokenInfo);
+		res.json(tokenInfo);
 	});
 	const httpServer = new HttpServer(app);
 	(eioServer as any).ws.httpServer = httpServer;
