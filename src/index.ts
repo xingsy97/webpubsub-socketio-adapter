@@ -1,15 +1,13 @@
 import { WebPubSubServiceClient } from "@azure/web-pubsub";
-import express from "express";
 import { WebPubSubEventHandler } from "@azure/web-pubsub-express";
 import { Server as HttpServer} from "http";
+import { AttachOptions, ServerOptions, Server as EioServer, Socket} from "G:\\engine.io";
+import { Server as SioServer} from "socket.io";
+import { v4 as uuidv4 } from 'uuid';
+import express from "express";
 import WebSocket from "ws";
 import * as core from "express-serve-static-core";
 import * as net from "net";
-import { AttachOptions, ServerOptions, Server as EioServer} from "G:\\engine.io";
-import { Server as SioServer} from "socket.io";
-import { Socket } from "engine.io";
-import { v4 as uuidv4 } from 'uuid';
-import { connect } from "http2";
 process.env.DEBUG = '*';
 
 /**
@@ -32,13 +30,12 @@ class VirtualWebSocketServer extends WebSocket.Server {
 class ClientConnectionContext extends VirtualWebSocketServer {
 	serviceClient: WebPubSubServiceClient;
 	connectionId: string;
-	cnt: number;
+	cnt: number = 0;
 
 	constructor(serviceClient: WebPubSubServiceClient, connectionId: string) {
 		super();
 		this.serviceClient = serviceClient;
 		this.connectionId = connectionId;
-		this.cnt = 0;
 	}
 
 	// Override the send action of native WebSocket
@@ -120,6 +117,7 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 	connectRequests: Map<string, any> = new Map();
 	currentIdIdx: number = 0;
 	adapterId: string = "";
+	linkedEioServer: EioServer;
 
 	buildFakeWebsocketRequestFromService(req) {
 		var fakeReq = {
@@ -152,7 +150,7 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 		this.eventHandler = new WebPubSubEventHandler(options.hub, {
 			path: options.path,
 			handleConnect: (req, res) => {
-				console.log("[Adatper] handleConnect");
+				console.log("[Adatper][WebPubsubServerAdapter][handleConnect]");
 				let connectionId = req.context.connectionId;
 				this.candidateIds.push(connectionId);
 
@@ -163,19 +161,20 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 				if (this.httpServer == null) throw("WebPubsubAdapterInternal: null httpServer when handleConnect");
 				
 				// this.clientConnections.get(connectionId).send("hello");
+				console.log((this.linkedEioServer as any).clients);
 				res.success({});
 			},
 
 			onConnected: async (req) => {
 				var connectionId = req.context.connectionId;
+				console.log((this.linkedEioServer as any).clients);
 				if (this.clientConnections.has(connectionId)) {
 					var context = this.clientConnections.get(connectionId);
 					var connectReq = this.connectRequests.get(connectionId);
 					var fakeReq = this.buildFakeWebsocketRequestFromService(connectReq);
-
-					var netSocket = new VirtualNetSocket(context);
-
-					this.httpServer.emit("upgrade", fakeReq, netSocket, Buffer.from([]));
+					fakeReq["webPubSubContext"] = context;
+					// var netSocket = new VirtualNetSocket(context);
+					this.httpServer.emit("upgrade", fakeReq, new net.Socket(), Buffer.from([]));
 					console.log(`connectionId = ${req.context.connectionId} is connected with Web PubSub service`);
 				}
 				else {
@@ -261,7 +260,10 @@ class WebPubSubServerAdapter {
   And the Engine.IO handshake behaviour is inside `handleRequest`
   Web PubSub handshake handler is inside its express middleware. So a temporary ExpressApp and HttpServer are created as bridges to pass Web PubSub handler into Engine.IO middlewares.
 */
-function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {	
+function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
+
+	hookEioServer(eioServer);
+
 	// Pass Web PubSub Express middlewares into Engine.IO middlewares
 	let bridgeApp = express();
 	bridgeApp.use((eioServer as any).ws.getMiddleware());
@@ -298,6 +300,8 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 		var id = (eioServer as any).ws.getNextId();
 		return id;
 	}
+
+	(eioServer as any).ws.linkedEioServer = eioServer;
 	return httpServer;
 }
 
@@ -306,6 +310,33 @@ function sioBuild(app: core.Express, sioServer: SioServer) {
 	const httpServer = eioBuild(app, eioServer);
 	sioServer.bind(eioServer as any);
 	return httpServer;
+}
+
+function hookEioServer(eioServer: EioServer) {
+	var nativeCreateTransport = (eioServer as any).createTransport;
+	(eioServer as any).createTransport = (transportName, req) => {
+		var hookedTransport = nativeCreateTransport(transportName, req);
+		hookedTransport.send = (packets: Array<any>) => {
+			for (var i = 0; i < packets.length; i++){
+			var payload = "";
+			switch (packets[i].type) {
+				case "open":  payload ="0" + packets[i].data; break;
+				case "close": payload ="1" + packets[i].data; break;
+				case "ping":  payload ="2"; break;
+				case "pong":  payload ="3"; break;
+				case "message": payload ="4" + packets[i].data; break;
+				case "upgrade": payload ="5" + packets[i].data; break;
+				case "noop":  payload ="6" + packets[i].data; break;
+				default:
+				throw("error when encoding");
+				break;
+			}
+			console.log(payload);
+			req.webPubSubContext.sendText(payload);
+			}
+		}
+		return hookedTransport;
+	}
 }
 
 export {WebPubSubServerAdapterOptions, WebPubSubServerAdapter, eioBuild, sioBuild};
