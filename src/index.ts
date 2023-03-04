@@ -1,9 +1,8 @@
 import { WebPubSubServiceClient } from "@azure/web-pubsub";
-import { WebPubSubEventHandler } from "@azure/web-pubsub-express";
+import { ConnectRequest, WebPubSubEventHandler } from "@azure/web-pubsub-express";
 import { Server as HttpServer} from "http";
 import { AttachOptions, ServerOptions, Server as EioServer, Socket} from "G:\\engine.io";
 import { Server as SioServer} from "socket.io";
-import { v4 as uuidv4 } from 'uuid';
 import express from "express";
 import WebSocket from "ws";
 import * as core from "express-serve-static-core";
@@ -39,8 +38,8 @@ class ClientConnectionContext extends VirtualWebSocketServer {
 	}
 
 	// Override the send action of native WebSocket
-	async send(packets: any, cb?: (err?: Error) => void) { 
-		this.serviceClient.sendToConnection(this.connectionId, packets);
+	async send(packet: any, cb?: (err?: Error) => void) { 
+		this.serviceClient.sendToConnection(this.connectionId, packet);
 		if (cb) cb();
 	}
 
@@ -51,49 +50,6 @@ class ClientConnectionContext extends VirtualWebSocketServer {
 	}
 
 	destory = () => { };
-}
-
-// class VirtualNetSocket extends WebSocket.WebSocket {
-class VirtualNetSocket extends net.Socket {
-	server: ClientConnectionContext;
-	readable: boolean;
-	writable: boolean;
-	cnt:number = 0;
-
-	constructor(server: ClientConnectionContext) {
-		super(null);
-		this.server = server;
-
-		(this as any).write = (payload: Buffer|string, cb?: (err?: Error) => void) => {
-			this.cnt++;
-			console.log(`---------- [Adapter][VirtualNetSocket.write] id = ${this.cnt} ------------------------`);
-
-			console.log('[Adapter][VirtualNetSocket] payload=', payload, "type = ", typeof(payload));
-			// let message = payload.toString();
-			if (payload.toString().includes("HTTP/1.1 101 Switching Protocols")) {
-				console.log("[Adapter][VirtualNetSocket] HTTP 101");
-				console.log('-------------------------------------------------');
-				if (cb) cb();
-				return true;
-			}
-
-			if (typeof(payload) === 'string') {
-				this.server.sendText(payload, cb);
-			}
-			else {
-				// this.server.send(payload, cb);
-				if (cb) cb();
-				// this.server.send(payload);
-			}
-			console.log('-------------------------------------------------');
-			return true;
-		}
-	}
-
-	destroy = () => {}
-	// write(payload: Buffer|string):boolean {
-	// 	return this.write(payload);
-	// }	
 }
 
 interface WebPubSubServerAdapterOptions {
@@ -116,10 +72,9 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 	candidateIds: Array<string> = new Array();
 	connectRequests: Map<string, any> = new Map();
 	currentIdIdx: number = 0;
-	adapterId: string = "";
 	linkedEioServer: EioServer;
 
-	buildFakeWebsocketRequestFromService(req) {
+	buildFakeWebsocketRequestFromService(req: ConnectRequest) {
 		var fakeReq = {
 			"method": "GET", // req.headers. // Runtime need further update, add METHOD into header
 			"url": "/eventhandler/",  // need to update in runtime
@@ -140,7 +95,6 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 
 	constructor(options: WebPubSubServerAdapterOptions) {
 		super();
-		this.adapterId = uuidv4();
 		this.serviceClient = new WebPubSubServiceClient(
 			options.connectionString,
 			options.hub, 
@@ -160,12 +114,12 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 
 				if (this.httpServer == null) throw("WebPubsubAdapterInternal: null httpServer when handleConnect");
 				
-				// this.clientConnections.get(connectionId).send("hello");
 				console.log((this.linkedEioServer as any).clients);
 				res.success({});
 			},
 
 			onConnected: async (req) => {
+				console.log("[WebPubSubServerAdapterInternal][onConnected]")
 				var connectionId = req.context.connectionId;
 				console.log((this.linkedEioServer as any).clients);
 				if (this.clientConnections.has(connectionId)) {
@@ -173,7 +127,6 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 					var connectReq = this.connectRequests.get(connectionId);
 					var fakeReq = this.buildFakeWebsocketRequestFromService(connectReq);
 					fakeReq["webPubSubContext"] = context;
-					// var netSocket = new VirtualNetSocket(context);
 					this.httpServer.emit("upgrade", fakeReq, new net.Socket(), Buffer.from([]));
 					console.log((this.linkedEioServer as any).clients);
 					console.log(`connectionId = ${req.context.connectionId} is connected with Web PubSub service`);
@@ -186,22 +139,18 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 			handleUserEvent: async (req, res) => {
 				console.log("[Adapter][handleUserEvent]", req);
 				let connectionId = req.context.connectionId;
-				if (this.clientConnections.has(connectionId)) {	// ping pong error message
+				if (this.clientConnections.has(connectionId)) {	// Handle 4 types of packet: ping pong message error
 					var packet;
 					switch (req.data[0]) {
-						case "2":
-							packet = {"type": "ping", "data": ""}; break;
-						case "3":
-							packet = {"type": "pong", "data": ""}; break;
-						case "4":
-							packet = {"type": "message", "data": ""}; break;
+						case "2": packet = {"type": "ping", "data": ""}; break;
+						case "3": packet = {"type": "pong", "data": ""}; break;
+						case "4": packet = {"type": "message", "data": ""}; break;
 						default:
 							packet = {"type": "error", "data": ""}; 
 							console.log("[WebPuBsubServerAdapterInternal][handleUserEvent] Failed to parse request, req = ", req);
 							break;
 					}
-					(this.sockets[req.context.connectionId] as any).onPacket(packet);
-					// this.httpServer.emit("packet", packet);
+					(this.linkedEioServer as any).clients[connectionId].onPacket(packet);
 					return res.success();
 				}
 				else {
@@ -224,8 +173,6 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 
 	getMiddleware = () => this.eventHandler.getMiddleware();
 
-	putSocketInfo = (socketId: string, socket: Socket) => { this.sockets[socketId] = socket; }
-
 	getNextId = () => this.candidateIds[this.currentIdIdx++];
 
 	getSubscriptionPath = async () => (await this.serviceClient.getClientAccessToken()).baseUrl;
@@ -233,16 +180,14 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 
 class WebPubSubServerAdapter {
 	eioOptions: AttachOptions & ServerOptions;
-	constructor(options: WebPubSubServerAdapterOptions)
-	{
+	constructor(options: WebPubSubServerAdapterOptions) {
 		var proxyHandler = {
 			construct: (target, args) =>
 			{
 				return new target(options, ...args);
 			},
 		}
-		var proxy = new Proxy(WebPubSubServerAdapterInternal, proxyHandler);
-		return proxy;
+		return new Proxy(WebPubSubServerAdapterInternal, proxyHandler);
 	}
 }
 
@@ -263,15 +208,18 @@ class WebPubSubServerAdapter {
 */
 function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 
-	hookEioServer(eioServer);
+	function addWebPubSubMiddlewaresToEIO(eioServer: EioServer) {
+		// Pass Web PubSub Express middlewares into Engine.IO middlewares
+		let bridgeApp = express();
+		bridgeApp.use((eioServer as any).ws.getMiddleware());
+		const bridgeHttpServer = new HttpServer(bridgeApp);
+		
+		(eioServer as any).middlewares = bridgeHttpServer.listeners("request");	
+		bridgeHttpServer.removeAllListeners("request");
+	}
 
-	// Pass Web PubSub Express middlewares into Engine.IO middlewares
-	let bridgeApp = express();
-	bridgeApp.use((eioServer as any).ws.getMiddleware());
-	const bridgeHttpServer = new HttpServer(bridgeApp);
-	
-	(eioServer as any).middlewares = bridgeHttpServer.listeners("request");	
-	bridgeHttpServer.removeAllListeners("request");
+	hookEioServer(eioServer);
+	addWebPubSubMiddlewaresToEIO(eioServer);
 
 	// Set negotiate handler for ExpressApp
 	app.get('/negotiate', async (req, res) => {
@@ -280,11 +228,22 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 			res.status(400).send('missing user id');
 			return;
 		}
-		// tokenInfo = {"token": "...", "baseUrl": "...", "url": "/..."}
+		/*
+			tokenInfo = { 
+				"token": "A.B.C", "baseUrl": "http://localhost/clients/engineio/hubs/{hub}", "url": "http://localhost/clients/engineio/hubs/{hub}?access_token=A.B.C",
+				"eio": {
+					"baseUrl": "http://localhost",
+					"query": { "access_token": "A.B.C" }
+				}
+			}
+		*/
+		// TODO: getClientAccessToken is hard-encoded hoooked. Need soft hook
 		let tokenInfo = await ((eioServer as any).ws.serviceClient as WebPubSubServiceClient).getClientAccessToken({ userId: id });
+		let eioPath = `/clients/engineio/hubs/eio_hub`;
 		tokenInfo["eio"] = {
 			"baseUrl": tokenInfo.baseUrl.substring(0, tokenInfo.baseUrl.indexOf("/clients/engineio/hubs/")),
-			"query": {"access_token": tokenInfo.token}
+			"query": {"access_token": tokenInfo.token},
+			"path": eioPath
 		}
 		res.setHeader("Access-Control-Allow-Origin", "*");
 		console.log(tokenInfo);
@@ -314,35 +273,41 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 function sioBuild(app: core.Express, sioServer: SioServer) {
 	const eioServer = new EioServer((sioServer as any).opts);
 	const httpServer = eioBuild(app, eioServer);
-	sioServer.bind(eioServer as any);
+	// sioServer.bind(eioServer);
+	sioServer.engine = eioServer as any;
 	return httpServer;
 }
 
 function hookEioServer(eioServer: EioServer) {
-	var nativeCreateTransport = (eioServer as any).createTransport;
-	(eioServer as any).createTransport = (transportName, req) => {
-		var hookedTransport = nativeCreateTransport(transportName, req);
-		hookedTransport.send = (packets: Array<any>) => {
-			for (var i = 0; i < packets.length; i++){
-			var payload = "";
-			switch (packets[i].type) {
-				case "open":  payload ="0" + packets[i].data; break;
-				case "close": payload ="1" + packets[i].data; break;
-				case "ping":  payload ="2"; break;
-				case "pong":  payload ="3"; break;
-				case "message": payload ="4" + packets[i].data; break;
-				case "upgrade": payload ="5" + packets[i].data; break;
-				case "noop":  payload ="6" + packets[i].data; break;
-				default:
-				throw("error when encoding");
-				break;
+
+	function hookTransportSend(eioServer: EioServer) {
+		var nativeCreateTransport = (eioServer as any).createTransport;
+		(eioServer as any).createTransport = (transportName, req) => {
+			var hookedTransport = nativeCreateTransport(transportName, req);
+			hookedTransport.send = (packets: Array<any>) => {
+				for (var i = 0; i < packets.length; i++){
+					var payload = "";
+					switch (packets[i].type) {
+						case "open":  payload ="0" + packets[i].data; break;
+						case "close": payload ="1" + packets[i].data; break;
+						case "ping":  payload ="2"; break;
+						case "pong":  payload ="3"; break;
+						case "message": payload ="4" + packets[i].data; break;
+						case "upgrade": payload ="5" + packets[i].data; break;
+						case "noop":  payload ="6" + packets[i].data; break;
+						default:
+							throw("error when encoding");
+							break;
+					}
+					console.log(payload);
+					req.webPubSubContext.sendText(payload);
+				}
 			}
-			console.log(payload);
-			req.webPubSubContext.sendText(payload);
-			}
+			return hookedTransport;
 		}
-		return hookedTransport;
 	}
+
+	hookTransportSend(eioServer);
 }
 
 export {WebPubSubServerAdapterOptions, WebPubSubServerAdapter, eioBuild, sioBuild};
