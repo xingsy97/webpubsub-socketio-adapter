@@ -1,7 +1,7 @@
 process.env.DEBUG="*";
 import express from "express";
 import {Server as EioServer, Socket} from "G:/engine.io";
-import {WebPubSubServerAdapter, eioBuild} from "../index";
+import {WebPubSubServerAdapter, eioBuild} from "../../index";
 const wpsOptions = {
   hub: "eio_hub", 
   path: "/eventhandler/",
