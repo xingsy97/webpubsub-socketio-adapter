@@ -1,6 +1,6 @@
 <head>
-  <title> test </title>
-  <script src="../../../engine.io-client/dist/engine.io.js"></script>
+  <title> AWPS EIO Test </title>
+  <script src="/engine.io.js"></script>
   <script>
     async function main() {
 		const mode = 2;
@@ -16,11 +16,10 @@
 					transports: ['websocket'],
 					transportOptions: {
 						websocket: { extraHeaders: {'Access-Control-Allow-Origin': '*', 'WebHook-Allowed-Origin': "*"} },	
-						// subprotocols: ["json.webpubsub.azure.v1"],
 						reconnection:false,
 					},
 				});
-			setInterval(() => {console.log(socket.readyState);}, 3000);
+			
 		}
 		else {		// Without Web PubSub
 			socket = new eio("localhost:3000", {
@@ -36,7 +35,7 @@
 			socket.on("event-on-client", () => { console.log("[client] my event is called.")})
 		}
     
-		console.log(socket.readyState)
+		setInterval(() => {console.log("socket.readyState = ", socket.readyState);}, 3000);
 		socket.on('open', () => {
 			console.log("Client conn open");
 			socket.on('message', data => {console.log("onMessage " + data + "\n");});
