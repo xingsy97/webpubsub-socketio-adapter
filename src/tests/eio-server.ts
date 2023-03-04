@@ -16,8 +16,6 @@ const httpServer = eioBuild(app, eioServer);
 
 eioServer.on("connection", socket => {
   console.log("[SIO Server][onConnect]");
-
-  console.log("[server] connection")
   socket.send("[From Server] hello");
   setInterval(() => { console.log(socket.readyState); }, 10000);
 });

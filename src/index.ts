@@ -7,6 +7,8 @@ import express from "express";
 import WebSocket from "ws";
 import * as core from "express-serve-static-core";
 import * as net from "net";
+import { hookEioServer } from "./hook/eio-server-hook";
+
 process.env.DEBUG = '*';
 
 /**
@@ -144,7 +146,7 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 					switch (req.data[0]) {
 						case "2": packet = {"type": "ping", "data": ""}; break;
 						case "3": packet = {"type": "pong", "data": ""}; break;
-						case "4": packet = {"type": "message", "data": ""}; break;
+						case "4": packet = {"type": "message", "data": (req.data as string).substring(1)}; break;
 						default:
 							packet = {"type": "error", "data": ""}; 
 							console.log("[WebPuBsubServerAdapterInternal][handleUserEvent] Failed to parse request, req = ", req);
@@ -193,7 +195,7 @@ class WebPubSubServerAdapter {
 
 /* 	
  In the design of Engine.IO package, the EIO server has its own middlewares rather than sharing with http server.
- And the entry of EIO middlewares is put in the first place when receiving HTTP request. Http server listeners is behind EIO middlewares
+ And EIO middlewares is put in the first place when receiving HTTP request. Http server listeners is behind EIO middlewares
  
                            .-------------.   Yes
        a HTTP request ---> | check(req)? |  ------->  `handleRequest(req)` (Engine.IO middlewares)
@@ -261,11 +263,6 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 		addTrailingSlash:false
 	});
 
-	eioServer.generateId = (req:any) => {
-		var id = (eioServer as any).ws.getNextId();
-		return id;
-	}
-
 	(eioServer as any).ws.linkedEioServer = eioServer;
 	return httpServer;
 }
@@ -278,36 +275,6 @@ function sioBuild(app: core.Express, sioServer: SioServer) {
 	return httpServer;
 }
 
-function hookEioServer(eioServer: EioServer) {
 
-	function hookTransportSend(eioServer: EioServer) {
-		var nativeCreateTransport = (eioServer as any).createTransport;
-		(eioServer as any).createTransport = (transportName, req) => {
-			var hookedTransport = nativeCreateTransport(transportName, req);
-			hookedTransport.send = (packets: Array<any>) => {
-				for (var i = 0; i < packets.length; i++){
-					var payload = "";
-					switch (packets[i].type) {
-						case "open":  payload ="0" + packets[i].data; break;
-						case "close": payload ="1" + packets[i].data; break;
-						case "ping":  payload ="2"; break;
-						case "pong":  payload ="3"; break;
-						case "message": payload ="4" + packets[i].data; break;
-						case "upgrade": payload ="5" + packets[i].data; break;
-						case "noop":  payload ="6" + packets[i].data; break;
-						default:
-							throw("error when encoding");
-							break;
-					}
-					console.log(payload);
-					req.webPubSubContext.sendText(payload);
-				}
-			}
-			return hookedTransport;
-		}
-	}
-
-	hookTransportSend(eioServer);
-}
 
 export {WebPubSubServerAdapterOptions, WebPubSubServerAdapter, eioBuild, sioBuild};
