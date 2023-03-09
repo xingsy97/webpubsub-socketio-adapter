@@ -1,8 +1,8 @@
 import { WebPubSubServiceClient } from "@azure/web-pubsub";
-import { ConnectRequest, WebPubSubEventHandler } from "@azure/web-pubsub-express";
+import { ConnectRequest, WebPubSubEventHandler, WebPubSubEventHandlerOptions } from "@azure/web-pubsub-express";
 import { Server as HttpServer} from "http";
 import { AttachOptions, ServerOptions, Server as EioServer, Socket} from "G:\\engine.io";
-import { Server as SioServer} from "socket.io";
+import { Server as SioServer} from "G:\\socket.io\\dist";
 import express from "express";
 import WebSocket from "ws";
 import * as core from "express-serve-static-core";
@@ -10,6 +10,12 @@ import * as net from "net";
 import { hookEioServer } from "./hook/eio-server-hook";
 
 process.env.DEBUG = '*';
+
+interface WebPubSubServerAdapterOptions {
+	connectionString: string;
+	hub: string;
+	path: string;
+}
 
 /**
  * a virtual WebSocket.Server without real server
@@ -54,12 +60,6 @@ class ClientConnectionContext extends VirtualWebSocketServer {
 	destory = () => { };
 }
 
-interface WebPubSubServerAdapterOptions {
-	connectionString: string;
-	hub: string;
-	path: string;
-}
-
 /**
  * A `WebPubSubServerAdapter` which replaces original `WebSocket.Server` to communicate between the GraphQL server and the Azure Web PubSub service
  * `clientConnections` records the mapping from the `connectionId` of each client to its corresponding logical `ClientConnectionContext`.
@@ -85,6 +85,7 @@ class WebPubSubServerAdapterInternal extends VirtualWebSocketServer {
 			"websocket": null,
 			"statusCode": null,
 			"statusMessage": null,
+			"connection":{}
 			// _query: (req as any).query,
 			// "._query": ? // poll mode only
 		}
@@ -208,7 +209,7 @@ class WebPubSubServerAdapter {
   And the Engine.IO handshake behaviour is inside `handleRequest`
   Web PubSub handshake handler is inside its express middleware. So a temporary ExpressApp and HttpServer are created as bridges to pass Web PubSub handler into Engine.IO middlewares.
 */
-function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
+function eioBuild(app: core.Express, eioServer: EioServer, wpsOptions: WebPubSubServerAdapterOptions): HttpServer {
 
 	function addWebPubSubMiddlewaresToEIO(eioServer: EioServer) {
 		// Pass Web PubSub Express middlewares into Engine.IO middlewares
@@ -241,7 +242,7 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 		*/
 		// TODO: getClientAccessToken is hard-encoded hoooked. Need soft hook
 		let tokenInfo = await ((eioServer as any).ws.serviceClient as WebPubSubServiceClient).getClientAccessToken({ userId: id });
-		let eioPath = `/clients/engineio/hubs/eio_hub`;
+		let eioPath = `/clients/engineio/hubs/${wpsOptions.hub}`;
 		tokenInfo["eio"] = {
 			"baseUrl": tokenInfo.baseUrl.substring(0, tokenInfo.baseUrl.indexOf("/clients/engineio/hubs/")),
 			"query": {"access_token": tokenInfo.token},
@@ -258,8 +259,7 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 	// Without this line, `init` will be called twice and cause re-run of `eioServer.wsEngine(...)` 
 	(eioServer as any).init = () => {};
 	eioServer.attach(httpServer, { 
-		// path: ((eioServer as any).ws as WebPubSubServerAdapter).eioOptions.path, 
-		path: "/eventhandler",
+		path: wpsOptions.path,
 		addTrailingSlash:false
 	});
 
@@ -267,14 +267,31 @@ function eioBuild(app: core.Express, eioServer: EioServer): HttpServer {
 	return httpServer;
 }
 
-function sioBuild(app: core.Express, sioServer: SioServer) {
-	const eioServer = new EioServer((sioServer as any).opts);
-	const httpServer = eioBuild(app, eioServer);
-	// sioServer.bind(eioServer);
-	sioServer.engine = eioServer as any;
-	return httpServer;
+class WebPubSubSioManager{
+	httpServer: HttpServer;
+	eioServer: EioServer;
+	sioServer: SioServer;
+
+	constructor(app: core.Express, wpsOptions: WebPubSubServerAdapterOptions, opts: ServerOptions & AttachOptions) {
+		let adapter = new WebPubSubServerAdapter(wpsOptions);
+
+		this.eioServer = new EioServer({...opts, wsEngine: adapter});
+		this.httpServer = eioBuild(app, this.eioServer, wpsOptions);
+
+		this.sioServer = new SioServer(null, {...opts, path: wpsOptions.path});
+		this.sioServer.bind(this.eioServer);
+	}
 }
 
+// function sioBuild(app: core.Express, sioServer: SioServer) {
+// 	const eioServer = new EioServer((sioServer as any).opts);
+// 	const httpServer = eioBuild(app, eioServer);
+// 	if (1 < 2) {
+// 		sioServer.bind(eioServer);
+// 		eioServer.on("connection", (sioServer as any).onconnection.bind(sioServer));
+// 		sioServer.engine = eioServer;
+// 	}
+// 	return httpServer;
+// }
 
-
-export {WebPubSubServerAdapterOptions, WebPubSubServerAdapter, eioBuild, sioBuild};
+export {WebPubSubSioManager, WebPubSubServerAdapter, eioBuild};

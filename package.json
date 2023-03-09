@@ -2,7 +2,7 @@
   "name": "socketio-webpubsub-adapter",
   "version": "0.0.0",
   "description": "A simple chat client using socket.io",
-  "main": "./build/index.js",
+  "main": "./build/src/index.js",
   "types": "./build/index.d.ts",
   "author": "xingsy97",
   "private": true,
